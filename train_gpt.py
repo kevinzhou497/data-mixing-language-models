@@ -31,6 +31,7 @@ parser.add_argument('--val_bin', type=str, required=True, help='location of desi
 parser.add_argument('--logdir', type=str, required=True, help='Directory to save logs and checkpoints')
 parser.add_argument('--learning_rate', type=float, required=True, help='Learning rate for training')
 parser.add_argument('--seed', type=int, default=42, help='Seed')
+parser.add_argument('--params', type=str, help='Number of parameters in the model (e.g. 124M)')
 parser.add_argument('--num_iterations', type=int, default=42, help='Number of iterations')
 args = parser.parse_args()
 # ----------------------------------------------------------------------------------
@@ -131,9 +132,7 @@ class Muon(torch.optim.Optimizer):
 
 # -----------------------------------------------------------------------------
 # PyTorch nn.Module definitions for the GPT-2 model
-
 class Rotary(torch.nn.Module):
-
     def __init__(self, dim, base=10000):
         super().__init__()
         inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2).float() / dim))
@@ -225,11 +224,10 @@ class Block(nn.Module):
 
 # -----------------------------------------------------------------------------
 # The main GPT-2 model
-
 @dataclass
 class GPTConfig:
     vocab_size : int = 50257
-    n_layer : int = 4 # changed 12
+    n_layer : int = 4 # changed from 12
     n_head : int = 12
     n_embd : int = 1024 # changed from 768 
 
@@ -261,7 +259,6 @@ class GPT(nn.Module):
             # if we are given some desired targets also calculate the loss
             logits = self.lm_head(x)
             logits = logits.float() # use tf32/fp32 for logits
-            # right now this is the method of calculating loss, might need to change for perplexity?
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
         else:
             # inference-time mini-optimization: only forward the lm_head on the very last position
@@ -410,6 +407,7 @@ class Hyperparameters:
     val_loss_every : int = 100 # every how many steps to evaluate val loss? 0 for only at the end
     val_tokens : int = 131072 # how many tokens of validation data? it's important to keep this fixed for consistent comparisons
     save_every : int = 0 # every how many steps to save the checkpoint? 0 for only at the end
+    params : str = args.params # how many parameters in the model, example: 124M, 1.5B, etc
 args = Hyperparameters()
 
 # set up DDP (distributed data parallel). torchrun sets this env variable
@@ -432,6 +430,7 @@ train_loader_primary = DistributedDataLoader(args.train_bin_primary, B, T, ddp_r
 train_loader_secondary = DistributedDataLoader(args.train_bin_secondary, B, T, ddp_rank, ddp_world_size)
 train_loader = MixedDistributedDataLoader(train_loader_primary, train_loader_secondary, args.mixing_ratio, B)
 
+# make sure the data is all good here
 val_loader = DistributedDataLoader(args.input_val_bin, B, T, ddp_rank, ddp_world_size)
 
 # calculate the number of steps to take in the val loop.
@@ -481,7 +480,7 @@ def get_lr(it):
 schedulers = [torch.optim.lr_scheduler.LambdaLR(opt, get_lr) for opt in optimizers]
 
 # begin logging
-log_save_dir = f"mix{args.mixing_ratio}_lr{args.learning_rate}"
+log_save_dir = f"{args.num_iterations}iters/mix{args.mixing_ratio}_lr{args.learning_rate}_{args.params}"
 if master_process:
     #run_id = str(uuid.uuid4())
     run_id = str(log_save_dir)
@@ -563,8 +562,10 @@ for step in range(args.num_iterations + 1):
     # the validation/sampling one last time, and then we break right here as we're done.
     if last_step:
         # Append run result to summary file, make this run specific so don't keep appending like this
+        
+        # Improve the summary log saving to differentiate all the experiments
         if master_process:
-            summary_file = f"logs/summary_{args.num_iterations}iter.txt"
+            summary_file = f"summary_logs/summary_{args.num_iterations}iter_{args.params}.txt"
             with open(summary_file, "a") as f:
                 f.write(f"mixing_ratio={args.mixing_ratio}, learning_rate={args.learning_rate}, val_loss={val_loss:.4f}, perplexity={perplexity:.4f}\n")
         break
@@ -604,6 +605,7 @@ for step in range(args.num_iterations + 1):
 
 if master_process:
     print(f"peak memory consumption: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB")
+print(sum(p.numel() for p in model.parameters()))
 print("end of script")
 # -------------------------------------------------------------------------
 # clean up nice
