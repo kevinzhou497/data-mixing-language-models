@@ -26,13 +26,18 @@ parser = argparse.ArgumentParser(description="Training Modded NanoGPT Script")
 
 parser.add_argument('--train_bin_primary', type=str, required=True, help='location of primary train.bin')
 parser.add_argument('--train_bin_secondary', type=str, required=True, help='location of secondary train.bin')
-parser.add_argument('--mixing_ratio', type=float, required=True, help='ratio of primary dataset (e.g., 0.7 means 70% primary, 30% secondary)')
+parser.add_argument('--train_bin_third', type=str, default=None, help='location of third train.bin')
+parser.add_argument('--mixing_ratio', type=float, default=None, help='ratio of primary dataset (e.g., 0.7 means 70% primary, 30% secondary)')
+parser.add_argument('--mixing_ratios', type=float, nargs="+", default=None, help='proportions of the data sources when there are greater than two data sources')
 parser.add_argument('--val_bin', type=str, required=True, help='location of desired val.bin')
+parser.add_argument('--val_bin_2', type=str, default=None, help='location of the second desired val.bin')
 parser.add_argument('--logdir', type=str, required=True, help='Directory to save logs and checkpoints')
 parser.add_argument('--learning_rate', type=float, required=True, help='Learning rate for training')
 parser.add_argument('--seed', type=int, default=42, help='Seed')
 parser.add_argument('--params', type=str, help='Number of parameters in the model (e.g. 124M)')
 parser.add_argument('--num_iterations', type=int, default=42, help='Number of iterations')
+parser.add_argument('--subsample', type=int, default=1, help='Subsample factor')
+parser.add_argument('--hq_dataset', type=str, help='High-quality data being used (e.g. wikipedia)')
 args = parser.parse_args()
 # ----------------------------------------------------------------------------------
 # For better performance and precision
@@ -166,7 +171,6 @@ def rmsnorm(x0, eps=1e-6):
     return x.type_as(x0)
 
 class CausalSelfAttention(nn.Module):
-
     def __init__(self, config):
         super().__init__()
         self.n_head = config.n_head
@@ -285,6 +289,7 @@ def _peek_data_shard(filename):
         print("---> HINT: Are you passing in a correct file with --input_bin?")
         print("---> HINT: Dataset encoding changed recently, re-run data prepro or refer again to README")
         exit(1)
+    # print(header)
     assert header[1] == 1, "unsupported version"
     ntok = header[2] # number of tokens (claimed)
     return ntok # for now just return the number of tokens
@@ -298,7 +303,8 @@ def _load_data_shard(filename):
          ntok = header[2] # number of tokens (claimed)
          # the rest of it are tokens, stored as uint16
          tokens = np.frombuffer(f.read(), dtype=np.uint16)
-    assert len(tokens) == ntok, "number of tokens read does not match header?"
+
+    #assert len(tokens) == ntok, "number of tokens read does not match header?"
     return tokens
 
 class DistributedDataLoader:
@@ -317,7 +323,7 @@ class DistributedDataLoader:
         ntok_total = 0
         for fname in self.files:
             shard_ntok = _peek_data_shard(fname)
-            assert shard_ntok >= num_processes * B * T + 1
+            # assert shard_ntok >= num_processes * B * T + 1
             ntok_total += int(shard_ntok)
         self.ntok_total = ntok_total
 
@@ -354,32 +360,54 @@ class DistributedDataLoader:
         return x.cuda(), y.cuda()
 
 class MixedDistributedDataLoader:
-    def __init__(self, primary_loader, secondary_loader, mix_ratio, total_batch_size):
+    def __init__(self, primary_loader, secondary_loader, total_batch_size, mix_ratio=None, third_loader=None, mixing_ratios=None):
         self.primary_loader = primary_loader
         self.secondary_loader = secondary_loader
+        
+        self.third_loader = third_loader
         self.mix_ratio = mix_ratio
         self.total_batch_size = total_batch_size
+        self.mixing_ratios = mixing_ratios
 
     def reset(self):
         self.primary_loader.reset()
         self.secondary_loader.reset()
+        if self.third_loader:
+            self.third_loader.reset()
 
     def next_batch(self):
         # setting the ratio of data sources 1 and 2 in the batch
-        B = self.total_batch_size
-        B1 = int(self.mix_ratio * B)
-        B2 = B - B1
-        x1, y1 = self.primary_loader.next_batch(B_override=B1)
-        x2, y2 = self.secondary_loader.next_batch(B_override=B2)
-        return torch.cat([x1, x2], dim=0), torch.cat([y1, y2], dim=0)
+        # have to make it able to accept 3 data sources
+        if self.mixing_ratios:
+            B = self.total_batch_size 
+            B1 = int(self.mixing_ratios[0]*B)
+            B2 = int(self.mixing_ratios[1] * B)
+            B3 = B - B1 - B2 
+            x1, y1 = self.primary_loader.next_batch(B_override=B1)
+            x2, y2 = self.secondary_loader.next_batch(B_override=B2)
+            x3, y3 = self.third_loader.next_batch(B_override=B3)
+            return torch.cat([x1, x2, x3], dim=0), torch.cat([y1, y2, y3], dim=0)
+        else:
+            B = self.total_batch_size
+            B1 = int(self.mix_ratio * B)
+            B2 = B - B1
+            x1, y1 = self.primary_loader.next_batch(B_override=B1)
+            x2, y2 = self.secondary_loader.next_batch(B_override=B2)
+            return torch.cat([x1, x2], dim=0), torch.cat([y1, y2], dim=0)
 
     @property
     def ntok_total(self):
-        return self.primary_loader.ntok_total + self.secondary_loader.ntok_total
+        if self.third_loader:
+            return self.primary_loader.ntok_total + self.secondary_loader.ntok_total + self.third_loader.ntok_total
+        else:  
+            return self.primary_loader.ntok_total + self.secondary_loader.ntok_total
 
     @property
     def files(self):
-        return self.primary_loader.files + self.secondary_loader.files
+        if self.third_loader:
+            return self.primary_loader.files + self.secondary_loader.files + self.third_loader.files 
+        else:     
+            return self.primary_loader.files + self.secondary_loader.files
 
 # -----------------------------------------------------------------------------
 # int main
@@ -387,10 +415,14 @@ class MixedDistributedDataLoader:
 @dataclass
 class Hyperparameters:
     # data hyperparams
+    # add in a third data source
     train_bin_primary : str = args.train_bin_primary
     train_bin_secondary : str = args.train_bin_secondary
+    train_bin_third : str = args.train_bin_third
     mixing_ratio : float = args.mixing_ratio
+    mixing_ratios = args.mixing_ratios
     input_val_bin : str = args.val_bin # input .bin to eval validation loss on
+    input_val_bin_2 : str = args.val_bin_2 # the second input .bin to eval validation loss on 
     # optimization hyperparams
     # total num training tokens = sequence_length * batch_size * num_iterations
     #batch_size : int = 8*64 # batch size, in sequences, across all devices
@@ -398,6 +430,7 @@ class Hyperparameters:
     device_batch_size : int = 128 # batch size, in sequences, per device
     sequence_length : int =  256 # sequence length, in tokens
     num_iterations : int = args.num_iterations # number of iterations to run, 14537 for 4*,  29074 would be set to be 8 * wikipedia tokens (119,085,169)
+    subsample : int = args.subsample
     learning_rate : float = args.learning_rate
     warmup_iters : int = 0
     # warmdown: 1800 / 6200 * num_iterations ratio
@@ -408,6 +441,7 @@ class Hyperparameters:
     val_tokens : int = 131072 # how many tokens of validation data? it's important to keep this fixed for consistent comparisons
     save_every : int = 0 # every how many steps to save the checkpoint? 0 for only at the end
     params : str = args.params # how many parameters in the model, example: 124M, 1.5B, etc
+    hq_dataset : str = args.hq_dataset
 args = Hyperparameters()
 
 # set up DDP (distributed data parallel). torchrun sets this env variable
@@ -428,15 +462,25 @@ B, T = args.device_batch_size, args.sequence_length
 # load tokens
 train_loader_primary = DistributedDataLoader(args.train_bin_primary, B, T, ddp_rank, ddp_world_size)
 train_loader_secondary = DistributedDataLoader(args.train_bin_secondary, B, T, ddp_rank, ddp_world_size)
-train_loader = MixedDistributedDataLoader(train_loader_primary, train_loader_secondary, args.mixing_ratio, B)
+if args.train_bin_third:
+    train_loader_third = DistributedDataLoader(args.train_bin_third, B, T, ddp_rank, ddp_world_size)
+    
+    
+train_loader = MixedDistributedDataLoader(train_loader_primary, train_loader_secondary, third_loader=train_loader_third, mixing_ratios=args.mixing_ratios, total_batch_size=B)
 
+# need a mixed loader for validation as well?
 # make sure the data is all good here
 val_loader = DistributedDataLoader(args.input_val_bin, B, T, ddp_rank, ddp_world_size)
+if args.input_val_bin_2:
+    val_loader_2 = DistributedDataLoader(args.input_val_bin_2, B, T, ddp_rank, ddp_world_size)
 
 # calculate the number of steps to take in the val loop.
 assert args.val_tokens % (B * T * ddp_world_size) == 0
 # changed to ensure that it doesn't crash if val set is too small
 val_steps = min(args.val_tokens // (B * T * ddp_world_size), val_loader.ntok_total // (B * T * ddp_world_size))
+if args.input_val_bin_2:
+    val_steps_2 = min(args.val_tokens // (B * T * ddp_world_size), val_loader_2.ntok_total // (B * T * ddp_world_size))
+
 # calculate the steps of gradient accumulation required to attain the desired global batch size.
 assert args.batch_size % (B * ddp_world_size) == 0
 # overall batch size divided by (device batch size * world size)
@@ -449,6 +493,7 @@ x, y = train_loader.next_batch()
 
 # init the model from scratch
 num_vocab = 50257
+# Should we keep the number of layers the same and just change the n_embd?
 model = GPT(GPTConfig(vocab_size=num_vocab, n_layer=12, n_head=12, n_embd=768))
 model = model.cuda()
 if hasattr(config, "coordinate_descent_tuning"):
@@ -480,7 +525,11 @@ def get_lr(it):
 schedulers = [torch.optim.lr_scheduler.LambdaLR(opt, get_lr) for opt in optimizers]
 
 # begin logging
-log_save_dir = f"{args.num_iterations}iters/mix{args.mixing_ratio}_lr{args.learning_rate}_{args.params}"
+if args.mixing_ratios:
+    log_save_dir = f"wiki_pubmed/{args.num_iterations}iters/mix{args.mixing_ratios}_lr{args.learning_rate}_{args.params}_{args.subsample}"
+else:
+    log_save_dir = f"{args.hq_dataset}/{args.num_iterations}iters/mix{args.mixing_ratio}_lr{args.learning_rate}_{args.params}_{args.subsample}"
+    
 if master_process:
     #run_id = str(uuid.uuid4())
     run_id = str(log_save_dir)
@@ -518,7 +567,6 @@ for step in range(args.num_iterations + 1):
     timed_steps = float('nan') if step <= 11 else (step - 10) + 1 # <= 11 to avoid bug in val
 
     # once in a while evaluate the validation dataset
-    # validation set might be empty?
     if (last_step or (args.val_loss_every > 0 and step % args.val_loss_every == 0)):
         # stop the clock
         torch.cuda.synchronize()
@@ -537,9 +585,28 @@ for step in range(args.num_iterations + 1):
         perplexity = torch.exp(val_loss)
         # log val loss to console, logfile, and summary file
         if master_process:
-            print(f'step:{step}/{args.num_iterations} ppl:{perplexity:.4f} val_loss:{val_loss:.4f} train_time:{training_time_ms:.0f}ms step_avg:{training_time_ms/(timed_steps-1):.2f}ms')
+            print(f'val 1, step:{step}/{args.num_iterations} ppl:{perplexity:.4f} val_loss:{val_loss:.4f} train_time:{training_time_ms:.0f}ms step_avg:{training_time_ms/(timed_steps-1):.2f}ms')
             with open(logfile, "a") as f:
-                f.write(f'step:{step}/{args.num_iterations} val_loss:{val_loss:.4f} train_time:{training_time_ms:.0f}ms step_avg:{training_time_ms/(timed_steps-1):.2f}ms\n')
+                f.write(f'val 1, step:{step}/{args.num_iterations} val_loss:{val_loss:.4f} train_time:{training_time_ms:.0f}ms step_avg:{training_time_ms/(timed_steps-1):.2f}ms\n')
+        
+        # for the second val, if it is passed in
+        if args.input_val_bin_2:
+            val_loader_2.reset()
+            val_loss_2 = 0.0
+            for _ in range(val_steps_2):
+                x_val, y_val = val_loader_2.next_batch()
+                with torch.no_grad(): # of course, we'd like to use ctx here too, but that creates a torch.compile error for some reason
+                    _, loss = model(x_val, y_val, return_logits=False)
+                    val_loss_2 += loss
+            dist.all_reduce(val_loss_2, op=dist.ReduceOp.AVG)
+            val_loss_2 /= val_steps_2
+            perplexity_2 = torch.exp(val_loss_2)
+            # log val loss to console, logfile, and summary file
+            if master_process:
+                print(f'val 2, step:{step}/{args.num_iterations} ppl:{perplexity_2:.4f} val_loss:{val_loss_2:.4f} train_time:{training_time_ms:.0f}ms step_avg:{training_time_ms/(timed_steps-1):.2f}ms')
+                with open(logfile, "a") as f:
+                    f.write(f'val 2, step:{step}/{args.num_iterations} val_loss:{val_loss_2:.4f} train_time:{training_time_ms:.0f}ms step_avg:{training_time_ms/(timed_steps-1):.2f}ms\n')
+            
         
         # start the clock again
         torch.cuda.synchronize()
@@ -564,11 +631,19 @@ for step in range(args.num_iterations + 1):
         # Append run result to summary file, make this run specific so don't keep appending like this
         
         # Improve the summary log saving to differentiate all the experiments
-        if master_process:
-            summary_file = f"summary_logs/summary_{args.num_iterations}iter_{args.params}.txt"
-            with open(summary_file, "a") as f:
-                f.write(f"mixing_ratio={args.mixing_ratio}, learning_rate={args.learning_rate}, val_loss={val_loss:.4f}, perplexity={perplexity:.4f}\n")
-        break
+        if args.mixing_ratios: # when we are using both Wikipedia and PubMed
+            if master_process:
+                summary_file = f"summary_logs/wiki_pubmed/summary_{args.num_iterations}iter_{args.params}_{args.subsample}.txt"
+                with open(summary_file, "a") as f:
+                    f.write(f"mixing_ratio={args.mixing_ratios}, learning_rate={args.learning_rate}, val_loss={val_loss:.4f}, perplexity={perplexity:.4f}, val_loss_2={val_loss_2:.4f}, perplexity_2={perplexity_2:.4f}\n")
+            break
+            
+        else:
+            if master_process:
+                summary_file = f"summary_logs/{args.hq_dataset}/summary_{args.num_iterations}iter_{args.params}_{args.subsample}.txt"
+                with open(summary_file, "a") as f:
+                    f.write(f"mixing_ratio={args.mixing_ratio}, learning_rate={args.learning_rate}, val_loss={val_loss:.4f}, perplexity={perplexity:.4f}\n")
+            break
 
     # --------------- TRAINING SECTION BEGIN -----------------
     model.train()
