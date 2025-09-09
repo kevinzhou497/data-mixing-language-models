@@ -8,6 +8,8 @@ from tqdm import tqdm
 import pickle
 
 def write_datafile(filename, toks):
+    """Note: this write_datafile code is taken from the data processing code of the modded-nanogpt 
+    repository, which can be found at https://github.com/KellerJordan/modded-nanogpt/blob/master/data/fineweb.py """
     assert len(toks) < 2**31
     header = np.zeros(256, dtype=np.int32)
     header[0] = 20250429  # magic
@@ -19,7 +21,7 @@ def write_datafile(filename, toks):
         f.write(toks.tobytes())
 
 # ----------------- ARG PARSING -------------------
-parser = argparse.ArgumentParser(description="FineWeb-like dataset preprocessing")
+parser = argparse.ArgumentParser(description="Data retrieval.")
 parser.add_argument("-d", "--dataset", type=str, required=True, help="Dataset name (Hugging Face)")
 parser.add_argument("-c", "--dataset_config", type=str, default=None, help="Optional dataset config")
 parser.add_argument("-s", "--shard_size", type=int, default=10**8, help="Tokens per shard (ignored if --num_shards is used)")
@@ -36,7 +38,9 @@ os.makedirs(args.output_dir, exist_ok=True)
 
 enc = tiktoken.get_encoding("gpt2")
 eot = enc._special_tokens['<|endoftext|>']
+print('loading dataset...')
 dataset = load_dataset(args.dataset, args.dataset_config, split=args.dataset_split, streaming=True)
+print("loaded dataset")
 
 def tokenize(doc):
     tokens = [eot]
@@ -55,7 +59,7 @@ for doc in dataset:
         tokenized_docs.append(tokenize(doc))
     if args.total_tokens > 0 and sum(len(t) for t in tokenized_docs) >= args.total_tokens * 1.2:
         break
-
+print("Finished Tokenizing")
 # Shuffle documents deterministically
 rng = np.random.default_rng(args.shuffle_seed)
 rng.shuffle(tokenized_docs)
@@ -98,12 +102,13 @@ with mp.Pool(nprocs) as pool:
                 progress_bar = tqdm(total=args.shard_size, unit="tokens", desc=f"Shard {shard_index}")
             progress_bar.update(n_tokens)
             total_tokens_considered += n_tokens
+      
         else:
             remainder = args.shard_size - token_count
             all_tokens_np[token_count:token_count+remainder] = tokens[:remainder]
 
             split = "train" if (shard_index > 0 or args.no_val) else "val"
-            filename = os.path.join(args.output_dir, f"{split}_{shard_index:06d}.bin")
+            filename = os.path.join(args.output_dir, f"{args.dataset_split}_{shard_index:06d}.bin")
             write_datafile(filename, all_tokens_np)
             written_files.append(filename)
 
@@ -127,7 +132,7 @@ with mp.Pool(nprocs) as pool:
     remaining_tokens = min(token_count, args.total_tokens - total_tokens_written)
     if remaining_tokens > 0:
         split = "train" if (shard_index > 0 or args.no_val) else "val"
-        filename = os.path.join(args.output_dir, f"{split}_{shard_index:06d}.bin")
+        filename = os.path.join(args.output_dir, f"{args.dataset_split}_{shard_index:06d}.bin")
         write_datafile(filename, all_tokens_np[:remaining_tokens])
         written_files.append(filename)
         total_tokens_written += remaining_tokens
@@ -140,7 +145,7 @@ meta = {
     'total_tokens': total_tokens_written,
     'shards': written_files,
 }
-with open(os.path.join(args.output_dir, "meta.pkl"), "wb") as f:
+with open(os.path.join(args.output_dir, f"meta_{args.dataset_split}.pkl"), "wb") as f:
     pickle.dump(meta, f)
 
 print(f"Finished! Wrote {len(written_files)} shards, total tokens: {total_tokens_written:,}")

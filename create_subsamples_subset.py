@@ -6,7 +6,8 @@ from tqdm import tqdm
 import tiktoken
 
 def write_datafile(filename, tokens_np):
-    """Writes a numpy array of tokens to a binary file."""
+    """Note: this write_datafile code is taken from the data processing code of the modded-nanogpt 
+    repository, which can be found at https://github.com/KellerJordan/modded-nanogpt/blob/master/data/fineweb.py """
     header = np.zeros(256, dtype=np.int32)
     header[0] = 20250429; header[1] = 1; header[2] = len(tokens_np)
     tokens_np = np.asarray(tokens_np, dtype=np.uint16)
@@ -36,6 +37,8 @@ def write_docs_to_shards(docs, output_dir, shard_size, meta_info):
     total_tokens_written = 0
 
     print(f"Writing {len(docs):,} documents to {output_dir}...")
+    # Note: later renamed the shard_*.bin files to either train_*.bin or validation_*.bin
+    # * represents any number denoting the shard number, such as 000000, 000001, etc
     for doc_tokens in tqdm(docs, unit=" docs"):
         doc_len = len(doc_tokens)
         total_tokens_written += doc_len
@@ -72,11 +75,9 @@ def main():
     parser.add_argument("--shard_size", type=int, default=100_000_000, help="Size of each new shard in tokens.")
     args = parser.parse_args()
 
-    # --- SETUP ---
     enc = tiktoken.get_encoding("gpt2")
     eot_token = enc._special_tokens['<|endoftext|>']
 
-    # --- LOAD ORIGINAL METADATA ---
     meta_path = os.path.join(args.input_dir, "meta.pkl")
     with open(meta_path, "rb") as f:
         meta = pickle.load(f)
@@ -86,22 +87,18 @@ def main():
         print("Error: Could not find shard file list in meta.pkl")
         return
 
-    # --- LOAD ALL DOCUMENTS INTO MEMORY (required for nesting) ---
-    # Note: This may not be feasible for extremely large datasets (>1B tokens).
     print(f"Loading all documents from {args.input_dir} into memory to ensure nesting...")
     doc_iterator = iterate_documents(original_shard_files, eot_token)
     all_docs = list(tqdm(doc_iterator, desc="Loading docs"))
     total_docs = len(all_docs)
     print(f"Loaded a total of {total_docs:,} documents.")
 
-    # --- GENERATE EACH FRACTIONAL SUBSET ---
     base_meta_info = {
         'vocab_size': meta['vocab_size'],
         'encoder': meta.get('encoder', 'gpt2'),
         'dtype': meta['dtype'],
     }
 
-    # Sort fractions from largest to smallest for logical processing
     for fraction in sorted(args.fractions, reverse=True):
         if not (0.0 < fraction <= 1.0):
             print(f"Skipping invalid fraction: {fraction}. Must be between 0 and 1.")

@@ -6,7 +6,8 @@ from tqdm import tqdm
 import tiktoken
 
 def write_datafile(filename, tokens_np):
-    """Writes a numpy array of tokens to a binary file."""
+    """Note: this write_datafile code is taken from the data processing code of the modded-nanogpt 
+    repository, which can be found at https://github.com/KellerJordan/modded-nanogpt/blob/master/data/fineweb.py """
     assert len(tokens_np) < 2**31
     header = np.zeros(256, dtype=np.int32)
     header[0] = 20250429  # magic
@@ -51,9 +52,8 @@ def iterate_documents(shard_files, eot_token):
             if start_idx > 0 or leftover.size == 0:
                  # We must prepend the EOT token to have the same structure as the original
                 yield np.concatenate(([eot_token], doc))
-            start_idx = eot_idx + 1 # Next doc starts after this EOT
+            start_idx = eot_idx + 1 
         
-        # The remaining tokens are the start of the next document
         leftover = tokens[start_idx:]
 
 

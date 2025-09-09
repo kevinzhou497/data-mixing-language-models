@@ -1,6 +1,6 @@
 # File contents are originally from the https://github.com/KellerJordan/modded-nanogpt repository 
 # Specifically, the train_gpt2.py file from the b345a1f commit ("new Muon record" ) on the master branch (October 11th, 2024)
-# The file was then modified to fit the purposes of our optimal data mixing research project
+# The file was then modified to fit the purposes of our optimal data mixing research work
 import argparse
 import os
 import sys
@@ -336,8 +336,8 @@ class DistributedDataLoader:
         self.tokens = _load_data_shard(self.files[self.current_shard])
 
     def advance(self): # advance to next data shard
-        self.current_shard = (self.current_shard + 1) % len(self.files)
-        self.current_position = self.process_rank * self.B * self.T
+        self.current_shard = (self.current_shard + 1) % len(self.files) # wraps around here if the shards have finished
+        self.current_position = self.process_rank * self.B * self.T # starts the current position over
         self.tokens = _load_data_shard(self.files[self.current_shard])
 
     # B_override used if specific mixing ratio specified
@@ -363,8 +363,10 @@ class MixedDistributedDataLoader:
     def __init__(self, primary_loader, secondary_loader, total_batch_size, mix_ratio=None, third_loader=None, mixing_ratios=None):
         self.primary_loader = primary_loader
         self.secondary_loader = secondary_loader
-        
-        self.third_loader = third_loader
+        if third_loader:
+            self.third_loader = third_loader
+        else:
+            self.third_loader = None
         self.mix_ratio = mix_ratio
         self.total_batch_size = total_batch_size
         self.mixing_ratios = mixing_ratios
@@ -429,11 +431,11 @@ class Hyperparameters:
     batch_size = 128 # smaller to test
     device_batch_size : int = 128 # batch size, in sequences, per device
     sequence_length : int =  256 # sequence length, in tokens
-    num_iterations : int = args.num_iterations # number of iterations to run, 14537 for 4*,  29074 would be set to be 8 * wikipedia tokens (119,085,169)
+    num_iterations : int = args.num_iterations # number of iterations to run
     subsample : int = args.subsample
     learning_rate : float = args.learning_rate
     warmup_iters : int = 0
-    # warmdown: 1800 / 6200 * num_iterations ratio
+    # warmdown: 1800 / 6200 * num_iterations ratio, since the original script had 1800 warmdown for 6200 total iterations
     warmdown_iters : int = args.num_iterations * 1800 / 6200  # number of iterations of linear warmup/warmdown for triangular or trapezoidal schedule
     weight_decay : float = 0
     # evaluation and logging hyperparams
@@ -441,7 +443,7 @@ class Hyperparameters:
     val_tokens : int = 131072 # how many tokens of validation data? it's important to keep this fixed for consistent comparisons
     save_every : int = 0 # every how many steps to save the checkpoint? 0 for only at the end
     params : str = args.params # how many parameters in the model, example: 124M, 1.5B, etc
-    hq_dataset : str = args.hq_dataset
+    hq_dataset : str = args.hq_dataset 
 args = Hyperparameters()
 
 # set up DDP (distributed data parallel). torchrun sets this env variable
@@ -464,9 +466,14 @@ train_loader_primary = DistributedDataLoader(args.train_bin_primary, B, T, ddp_r
 train_loader_secondary = DistributedDataLoader(args.train_bin_secondary, B, T, ddp_rank, ddp_world_size)
 if args.train_bin_third:
     train_loader_third = DistributedDataLoader(args.train_bin_third, B, T, ddp_rank, ddp_world_size)
+else:
+    train_loader_third = None
     
-    
-train_loader = MixedDistributedDataLoader(train_loader_primary, train_loader_secondary, third_loader=train_loader_third, mixing_ratios=args.mixing_ratios, total_batch_size=B)
+if args.mixing_ratios:
+    train_loader = MixedDistributedDataLoader(train_loader_primary, train_loader_secondary, third_loader=train_loader_third, mixing_ratios=args.mixing_ratios, total_batch_size=B)
+else:
+    train_loader = MixedDistributedDataLoader(train_loader_primary, train_loader_secondary, mix_ratio=args.mixing_ratio, total_batch_size=B)
+
 
 # need a mixed loader for validation as well?
 # make sure the data is all good here
@@ -493,7 +500,7 @@ x, y = train_loader.next_batch()
 
 # init the model from scratch
 num_vocab = 50257
-# Should we keep the number of layers the same and just change the n_embd?
+# Specify the config here to change model size
 model = GPT(GPTConfig(vocab_size=num_vocab, n_layer=12, n_head=12, n_embd=768))
 model = model.cuda()
 if hasattr(config, "coordinate_descent_tuning"):
