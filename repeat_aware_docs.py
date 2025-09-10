@@ -20,14 +20,13 @@ def write_datafile(filename, tokens_np):
         f.write(tokens_np.tobytes())
 
 def create_shuffled_token_generator(dataset, permutation, encoder, eot_token):
-
     for doc_idx in permutation:
         text = dataset[int(doc_idx)].get("text", "").strip()
         if text:
             tokens = [eot_token] + encoder.encode_ordinary(text)
             yield np.array(tokens, dtype=np.uint16)
 
-# ----------------- ARG PARSING -------------------
+
 parser = argparse.ArgumentParser(description="Data retrieval and document-based subsampling.")
 parser.add_argument("-d", "--dataset", type=str, required=True)
 parser.add_argument("-c", "--dataset_config", type=str, default=None)
@@ -38,12 +37,11 @@ parser.add_argument("--shuffle_seed", type=int, default=42)
 parser.add_argument("--dataset_split", type=str, default="train")
 args = parser.parse_args()
 
-# ----------------- SETUP -------------------
+
 os.makedirs(args.output_dir, exist_ok=True)
 enc = tiktoken.get_encoding("gpt2")
 eot = enc._special_tokens['<|endoftext|>']
 
-# ----------------- DATA LOADING & SUBSAMPLING -------------------
 print("Loading dataset...")
 dataset = load_dataset(args.dataset, args.dataset_config, split=args.dataset_split)
 num_docs = len(dataset)
@@ -54,23 +52,19 @@ rng = np.random.default_rng(args.shuffle_seed)
 full_permutation = np.arange(num_docs)
 rng.shuffle(full_permutation)
 
-# --- This section is now much simpler ---
-# Subsample by document count directly. No token counting needed.
+# subsample using the number of documents
 num_docs_to_process = int(num_docs / args.subsample_factor)
 final_permutation = full_permutation[:num_docs_to_process]
 print(f"Subsampling to process the first {len(final_permutation):,} documents from the shuffled set.")
 # --- End of simplification ---
 
-# ----------------- SHARDING PROCESS -------------------
 print("\nProcessing and writing shards...")
-# The token generator now works on the subsampled list of documents.
 token_generator = create_shuffled_token_generator(dataset, final_permutation, enc, eot)
 
 shard_index = 0
 total_tokens_written = 0
 written_files = []
 
-# Allocate buffer for the first shard
 all_tokens_np = np.empty((args.shard_size,), dtype=np.uint16)
 token_count = 0
 progress_bar = tqdm(total=args.shard_size, unit="tokens", desc=f"Shard {shard_index}")
@@ -78,7 +72,6 @@ progress_bar = tqdm(total=args.shard_size, unit="tokens", desc=f"Shard {shard_in
 for tokens in token_generator:
     n_tokens_to_add = len(tokens)
     
-    # This loop handles cases where a document is larger than the remaining space in a shard
     offset = 0
     while offset < n_tokens_to_add:
         space_in_shard = args.shard_size - token_count
@@ -91,7 +84,7 @@ for tokens in token_generator:
         progress_bar.update(chunk_size)
         offset = end_offset
 
-        # If the current shard is full, write it and start a new one
+        # if shard is full, write the shard and start a new one
         if token_count == args.shard_size:
             filename = os.path.join(args.output_dir, f"{args.dataset_split}_{shard_index:06d}.bin")
             write_datafile(filename, all_tokens_np)
@@ -99,21 +92,19 @@ for tokens in token_generator:
             total_tokens_written += token_count
             shard_index += 1
             
-            # Reset for the next shard
+            # reset
             token_count = 0
             progress_bar.close()
             progress_bar = tqdm(total=args.shard_size, unit="tokens", desc=f"Shard {shard_index}")
 
-# Write the final partial shard
+# write the remaining tokens
 progress_bar.close()
 if token_count > 0:
     filename = os.path.join(args.output_dir, f"{args.dataset_split}_{shard_index:06d}.bin")
-    # Write only the tokens that have been added to the buffer
     write_datafile(filename, all_tokens_np[:token_count])
     written_files.append(filename)
     total_tokens_written += token_count
 
-# ----------------- SAVE META -------------------
 meta = {
     'vocab_size': enc.n_vocab,
     'encoder': 'gpt2',

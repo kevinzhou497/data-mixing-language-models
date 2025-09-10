@@ -25,20 +25,19 @@ def iterate_documents(shard_files, eot_token):
     """
     leftover = np.array([], dtype=np.uint16)
     for shard_file in shard_files:
-        # Check if file exists and is not empty
+        # check if file exists
         if not os.path.exists(shard_file) or os.path.getsize(shard_file) <= (256 * 4):
             continue
         
         # Read the tokens from the shard, skipping the header
         tokens = np.fromfile(shard_file, dtype=np.uint16, offset=256 * 4)
         
-        # Prepend leftover tokens from the previous shard
+        # Concatenate the leftover tokens from the previous shard with the current tokens
         tokens = np.concatenate((leftover, tokens))
         
-        # Find indices of all EOT tokens
         eot_indices = np.where(tokens == eot_token)[0]
 
-        # If no EOT token is found, the whole shard is part of a single document
+        # If no eot indices, the whole shard is part of a single document
         if len(eot_indices) == 0:
             leftover = tokens
             continue
@@ -46,11 +45,9 @@ def iterate_documents(shard_files, eot_token):
         # Yield each complete document
         start_idx = 0
         for eot_idx in eot_indices:
-            # The document is from the previous EOT (or start) to this EOT
+            # Document is from the previous EOT (or start) to this EOT
             doc = tokens[start_idx:eot_idx]
-            # The first document might be a fragment if the shard starts mid-document
             if start_idx > 0 or leftover.size == 0:
-                 # We must prepend the EOT token to have the same structure as the original
                 yield np.concatenate(([eot_token], doc))
             start_idx = eot_idx + 1 
         
@@ -66,12 +63,11 @@ def main():
     parser.add_argument("--split", type=str, help="train or val")
     args = parser.parse_args()
 
-    # --- SETUP ---
     os.makedirs(args.output_dir, exist_ok=True)
     enc = tiktoken.get_encoding("gpt2")
     eot_token = enc._special_tokens['<|endoftext|>']
 
-    # --- LOAD ORIGINAL METADATA ---
+    # Loading in the existing meta data
     meta_path = os.path.join(args.input_dir, "meta.pkl")
     if not os.path.exists(meta_path):
         print(f"Error: meta.pkl not found in {args.input_dir}")
@@ -80,11 +76,10 @@ def main():
     with open(meta_path, "rb") as f:
         meta = pickle.load(f)
     
-    # Either train or val shards
     original_shard_files = meta[f'{args.split}_shards']['files']
     print(f"Found {len(original_shard_files)} original shards.")
 
-    # --- COLLECT DOCUMENTS ---
+    # Get the documents until the target token number is reached
     print(f"Collecting documents to reach approximately {args.target_tokens:,} tokens...")
     selected_docs_tokens = []
     total_tokens_collected = 0
@@ -97,8 +92,6 @@ def main():
             break
     
     print(f"Collected {len(selected_docs_tokens):,} documents with a total of {total_tokens_collected:,} tokens.")
-
-    # --- WRITE NEW SHARDS ---
     print("Writing new subset shards...")
     shard_index = 0
     tokens_in_current_shard = 0
@@ -126,7 +119,7 @@ def main():
         write_datafile(filename, current_shard_tokens[:tokens_in_current_shard])
         written_files.append(filename)
 
-    # --- SAVE NEW META ---
+    # New meta data for this subset
     new_meta = {
         'description': f'Subset of approximately {args.target_tokens:,} tokens from {args.input_dir}',
         'vocab_size': enc.n_vocab,
