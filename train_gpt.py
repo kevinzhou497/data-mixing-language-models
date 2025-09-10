@@ -276,7 +276,7 @@ class GPT(nn.Module):
         return logits, loss
 
 # -----------------------------------------------------------------------------
-# Our own simple Distributed Data Loader
+# Distributed Data Loader
 
 def _peek_data_shard(filename):
      # only reads the header, returns header data
@@ -288,10 +288,10 @@ def _peek_data_shard(filename):
         print("---> HINT: Are you passing in a correct file with --input_bin?")
         print("---> HINT: Dataset encoding changed recently, re-run data prepro or refer again to README")
         exit(1)
-    # print(header)
+
     assert header[1] == 1, "unsupported version"
     ntok = header[2] # number of tokens (claimed)
-    return ntok # for now just return the number of tokens
+    return ntok 
  
 def _load_data_shard(filename):
     with open(filename, "rb") as f:
@@ -303,7 +303,6 @@ def _load_data_shard(filename):
          # the rest of it are tokens, stored as uint16
          tokens = np.frombuffer(f.read(), dtype=np.uint16)
 
-    #assert len(tokens) == ntok, "number of tokens read does not match header?"
     return tokens
 
 class DistributedDataLoader:
@@ -426,8 +425,7 @@ class Hyperparameters:
     input_val_bin_2 : str = args.val_bin_2 # the second input .bin to eval validation loss on 
     # optimization hyperparams
     # total num training tokens = sequence_length * batch_size * num_iterations
-    #batch_size : int = 8*64 # batch size, in sequences, across all devices
-    batch_size = 128 # smaller to test
+    batch_size = 128 
     device_batch_size : int = 128 # batch size, in sequences, per device
     sequence_length : int =  256 # sequence length, in tokens
     num_iterations : int = args.num_iterations # number of iterations to run
@@ -474,9 +472,9 @@ else:
     train_loader = MixedDistributedDataLoader(train_loader_primary, train_loader_secondary, mix_ratio=args.mixing_ratio, total_batch_size=B)
 
 
-# need a mixed loader for validation as well?
-# make sure the data is all good here
+
 val_loader = DistributedDataLoader(args.input_val_bin, B, T, ddp_rank, ddp_world_size)
+# for the three-source experiments
 if args.input_val_bin_2:
     val_loader_2 = DistributedDataLoader(args.input_val_bin_2, B, T, ddp_rank, ddp_world_size)
 

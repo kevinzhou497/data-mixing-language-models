@@ -56,7 +56,6 @@ rng.shuffle(full_permutation)
 num_docs_to_process = int(num_docs / args.subsample_factor)
 final_permutation = full_permutation[:num_docs_to_process]
 print(f"Subsampling to process the first {len(final_permutation):,} documents from the shuffled set.")
-# --- End of simplification ---
 
 print("\nProcessing and writing shards...")
 token_generator = create_shuffled_token_generator(dataset, final_permutation, enc, eot)
