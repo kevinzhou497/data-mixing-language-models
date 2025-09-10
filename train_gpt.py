@@ -20,7 +20,6 @@ import torch.distributed as dist
 import torch._inductor.config as config
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-# ----------------------------------------------------------------------------------
 # Arg Parsing 
 parser = argparse.ArgumentParser(description="Training Modded NanoGPT Script")
 
