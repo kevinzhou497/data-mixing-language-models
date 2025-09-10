@@ -6,7 +6,7 @@ from tqdm import tqdm
 import tiktoken
 
 def write_datafile(filename, tokens_np):
-    """Note: this write_datafile code is taken from the data processing code of the modded-nanogpt 
+    """Note: this write_datafile code is adapted from the data processing code of the modded-nanogpt 
     repository, which can be found at https://github.com/KellerJordan/modded-nanogpt/blob/master/data/fineweb.py """
     assert len(tokens_np) < 2**31
     header = np.zeros(256, dtype=np.int32)

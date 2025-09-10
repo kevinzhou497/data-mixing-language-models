@@ -7,7 +7,7 @@ from tqdm import tqdm
 import pickle
 
 def write_datafile(filename, tokens_np):
-    """Note: this write_datafile code is taken from the data processing code of the modded-nanogpt 
+    """Note: this write_datafile code is adapted from the data processing code of the modded-nanogpt 
     repository, which can be found at https://github.com/KellerJordan/modded-nanogpt/blob/master/data/fineweb.py """
     assert len(tokens_np) < 2**31
     header = np.zeros(256, dtype=np.int32)
@@ -26,7 +26,7 @@ def create_shuffled_token_generator(dataset, permutation, encoder, eot_token):
             tokens = [eot_token] + encoder.encode_ordinary(text)
             yield np.array(tokens, dtype=np.uint16)
 
-
+# Arg Parsing
 parser = argparse.ArgumentParser(description="Data retrieval and document-based subsampling.")
 parser.add_argument("-d", "--dataset", type=str, required=True)
 parser.add_argument("-c", "--dataset_config", type=str, default=None)
@@ -42,6 +42,7 @@ os.makedirs(args.output_dir, exist_ok=True)
 enc = tiktoken.get_encoding("gpt2")
 eot = enc._special_tokens['<|endoftext|>']
 
+# No streaming for loading in the data
 print("Loading dataset...")
 dataset = load_dataset(args.dataset, args.dataset_config, split=args.dataset_split)
 num_docs = len(dataset)

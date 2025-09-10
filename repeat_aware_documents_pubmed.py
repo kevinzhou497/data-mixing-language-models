@@ -7,7 +7,7 @@ from tqdm import tqdm
 import pickle
 
 def write_datafile(filename, tokens_np):
-    """Note: this write_datafile code is taken from the data processing code of the modded-nanogpt 
+    """Note: this write_datafile code is adapted from the data processing code of the modded-nanogpt 
     repository, which can be found at https://github.com/KellerJordan/modded-nanogpt/blob/master/data/fineweb.py """
     assert len(tokens_np) < 2**31
     header = np.zeros(256, dtype=np.int32)
@@ -20,7 +20,6 @@ def write_datafile(filename, tokens_np):
         f.write(tokens_np.tobytes())
 
 def create_shuffled_token_generator(dataset, permutation, encoder, eot_token):
-    
     for doc_idx in permutation:
         doc = dataset[int(doc_idx)]
         # retrieve the necessary PubMed abstract text
