@@ -498,7 +498,7 @@ x, y = train_loader.next_batch()
 # init the model from scratch
 num_vocab = 50257
 # Specify the config here to change model size
-model = GPT(GPTConfig(vocab_size=num_vocab, n_layer=12, n_head=12, n_embd=768))
+model = GPT(GPTConfig(vocab_size=num_vocab, n_layer=18, n_head=18, n_embd=1152))
 model = model.cuda()
 if hasattr(config, "coordinate_descent_tuning"):
     config.coordinate_descent_tuning = True # suggested by @Chillee
