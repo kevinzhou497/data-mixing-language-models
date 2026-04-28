@@ -60,7 +60,7 @@ Full Wikipedia, 5 horizons. Edit `job_1b.sh` or `job_1b_second.sh` with the appr
 
 | Horizon | Iters | 757M Optimal | Expected 1B Range |
 |---|---|---|---|
-| 1 | 7,134 | 0.10 | ~0.00–0.10 |
+| 1 | 7,134 | 0.10 | **0.00** (confirmed) |
 | 2 | 14,268 | 0.40 | 0.25–0.45 |
 | 3 | 28,536 | 0.65 | 0.45–0.70 |
 | 4 | 57,071 | 0.75 | 0.65–0.80 |
@@ -129,3 +129,38 @@ mix=0.35 → 3.16
 mix=0.40 → 3.159  ← minimum
 mix=0.45 → 3.172  (rising → done)
 ```
+
+---
+
+## PubMed Extension
+
+Same process as Wikipedia. Key differences in the job script:
+
+```bash
+HQ_DATASET="pubmed"
+# train secondary:
+--train_bin_secondary "data/pubmed/train_subsamples/subsample_${SAMPLE}_docs/train_*.bin"
+# validation:
+--val_bin "data/pubmed/val_200K/validation_*.bin"
+```
+
+Results go to `summary_logs/pubmed/summary_<ITERS>iter_1B_<SAMPLE>.txt`.
+
+### Scaling Laws (SAMPLE=1)
+
+| Horizon | Iters | 757M Optimal | Expected 1B Range |
+|---|---|---|---|
+| 1 | 7,324 | 0.15 | 0.05–0.20 |
+| 2 | 14,649 | 0.40 | 0.25–0.50 |
+| 3 | 29,297 | 0.60 | 0.45–0.70 |
+| 4 | 58,594 | 0.75 | 0.60–0.85 |
+| 5 | 117,188 | 0.80 | 0.70–0.90 |
+
+### Repeat-Aware
+
+| Subsample | Iters |
+|---|---|
+| 1/2 (SAMPLE=2) | 58,566 |
+| 1/4 (SAMPLE=4) | 29,249 |
+| 1/8 (SAMPLE=8) | 14,679 |
+| 1/16 (SAMPLE=16) | 7,366 |
