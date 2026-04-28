@@ -1,6 +1,6 @@
 #!/bin/bash
 #PBS -lwalltime=48:00:00
-#PBS -l select=1:ncpus=8:mem=64gb:ngpus=1
+#PBS -l select=1:ncpus=8:mem=128gb:ngpus=1
 #PBS -o /gpfs/home/klz24/data-mixing-language-models/job_o
 #PBS -e  /gpfs/home/klz24/data-mixing-language-models/job_e
 module purge
@@ -18,8 +18,7 @@ CUDA_VISIBLE_DEVICES=0
 
 MIX_RATIOS=(0.55 0.65) 
 MIXING_RATIOS_LIST=(
-  "0.56 0.22 0.22"
-  "0.57 0.215 0.215"
+  "0.7 0.2 0.1"
 )
 LEARNING_RATES=(0.001)
 ITERATIONS=(115665)
@@ -28,7 +27,7 @@ HQ_DATASET="wikipedia"
 HQ_directory="wikitext"
 HQ_DATASET_2="pubmed"
 HQ_directory_2="pubmed"
-MODEL_PARAMS="124M" 
+MODEL_PARAMS="757M" 
 logging_hq="wikipedia_pubmed"
 for LR in "${LEARNING_RATES[@]}"; do
   for MIX in "${MIXING_RATIOS_LIST[@]}"; do

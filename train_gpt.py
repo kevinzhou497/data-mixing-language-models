@@ -498,7 +498,8 @@ x, y = train_loader.next_batch()
 # init the model from scratch
 num_vocab = 50257
 # Specify the config here to change model size
-model = GPT(GPTConfig(vocab_size=num_vocab, n_layer=18, n_head=18, n_embd=1152))
+
+model = GPT(GPTConfig(vocab_size=num_vocab, n_layer=24, n_head=24, n_embd=1536))
 model = model.cuda()
 if hasattr(config, "coordinate_descent_tuning"):
     config.coordinate_descent_tuning = True # suggested by @Chillee
@@ -621,8 +622,8 @@ for step in range(args.num_iterations + 1):
         torch.cuda.synchronize()
         training_time_ms += 1000 * (time.time() - t0)
         # save the state of the training process
-        log = dict(step=step, code=code, model=raw_model.state_dict(), optimizers=[opt.state_dict() for opt in optimizers])
-        torch.save(log, 'logs/%s/state_step%06d.pt' % (run_id, step))
+        # log = dict(step=step, code=code, model=raw_model.state_dict(), optimizers=[opt.state_dict() for opt in optimizers])
+        #torch.save(log, 'logs/%s/state_step%06d.pt' % (run_id, step))
         # start the clock again
         torch.cuda.synchronize()
         t0 = time.time()

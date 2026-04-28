@@ -1,6 +1,6 @@
 #!/bin/bash
 #PBS -lwalltime=24:00:00
-#PBS -l select=1:ncpus=8:mem=64gb:ngpus=1
+#PBS -l select=1:ncpus=8:mem=128gb:ngpus=1
 #PBS -o /gpfs/home/klz24/data-mixing-language-models/job_o
 #PBS -e  /gpfs/home/klz24/data-mixing-language-models/job_e
 module purge
@@ -16,14 +16,14 @@ nvidia-smi || echo "nvidia-smi failed"
 
 CUDA_VISIBLE_DEVICES=0
 
-MIX_RATIOS=(0.75) 
+MIX_RATIOS=(0.55) 
 
 LEARNING_RATES=(0.001)
-ITERATIONS=(58566)
-SAMPLE=2
+ITERATIONS=(29297)
+SAMPLE=1
 HQ_DATASET="pubmed"
 HQ_directory="pubmed"
-MODEL_PARAMS="345M" 
+MODEL_PARAMS="757M" 
 
 for LR in "${LEARNING_RATES[@]}"; do
   for MIX in "${MIX_RATIOS[@]}"; do
@@ -31,7 +31,7 @@ for LR in "${LEARNING_RATES[@]}"; do
       LOGDIR="logs/${HQ_DATASET}/${NUM_ITERATIONS}iters/mix${MIX}_lr${LR}_${MODEL_PARAMS}_${SAMPLE}"
       mkdir -p "$LOGDIR"
       torchrun --standalone --nproc_per_node=1 train_gpt.py \
-        --train_bin_primary "data/finewebtext/subsample_${SAMPLE}_docs/train_*.bin" \
+        --train_bin_primary "data/finewebtext/train_*.bin" \
         --train_bin_secondary "data/${HQ_directory}/train_subsamples/subsample_${SAMPLE}_docs/train_*.bin" \
         --mixing_ratio $MIX \
         --val_bin "data/${HQ_directory}/val_200K/validation_*.bin" \
