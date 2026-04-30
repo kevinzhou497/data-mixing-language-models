@@ -665,7 +665,8 @@ for step in range(args.num_iterations + 1):
         torch.cuda.synchronize()
         t0 = time.time()
 
-    if master_process and (last_step or (args.save_every > 0 and step % args.save_every == 0)):
+    mid_step = (step == args.num_iterations // 2)
+    if master_process and (last_step or mid_step or (args.save_every > 0 and step % args.save_every == 0)):
         # stop the clock
         torch.cuda.synchronize()
         training_time_ms += 1000 * (time.time() - t0)
