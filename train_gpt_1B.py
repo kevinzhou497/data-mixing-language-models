@@ -45,6 +45,7 @@ parser.add_argument('--grad_checkpointing', action='store_true', help='Use activ
 parser.add_argument('--n_layer', type=int, default=28, help='Number of transformer layers')
 parser.add_argument('--n_head', type=int, default=28, help='Number of attention heads')
 parser.add_argument('--n_embd', type=int, default=1792, help='Embedding dimension')
+parser.add_argument('--save_every', type=int, default=0, help='Save checkpoint every N steps; 0 = only at the end')
 args = parser.parse_args()
 # ----------------------------------------------------------------------------------
 # For better performance and precision
@@ -256,7 +257,7 @@ class GPT(nn.Module):
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
         self.transformer.wte.weight = self.lm_head.weight # https://paperswithcode.com/method/weight-tying
 
-    def forward(self, idx, targets=None, return_logits=True):
+    def forward(self, idx, targets=None, return_logits=True, per_seq=False):
         b, t = idx.size()
         pos = torch.arange(0, t, dtype=torch.long, device=idx.device) # shape (t)
 
@@ -274,7 +275,12 @@ class GPT(nn.Module):
             # if we are given some desired targets also calculate the loss
             logits = self.lm_head(x)
             logits = logits.float() # use tf32/fp32 for logits
-            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
+            if per_seq:
+                # per-sequence loss: average token losses within each sequence, shape [B]
+                token_loss = F.cross_entropy(logits.permute(0, 2, 1), targets, reduction='none')  # [B, T]
+                loss = token_loss.mean(dim=1)  # [B]
+            else:
+                loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
         else:
             # inference-time mini-optimization: only forward the lm_head on the very last position
             logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
@@ -456,7 +462,7 @@ class Hyperparameters:
     # evaluation and logging hyperparams
     val_loss_every : int = 100 # every how many steps to evaluate val loss? 0 for only at the end
     val_tokens : int = 131072 # how many tokens of validation data? it's important to keep this fixed for consistent comparisons
-    save_every : int = 0 # every how many steps to save the checkpoint? 0 for only at the end
+    save_every : int = args.save_every
     params : str = args.params # how many parameters in the model, example: 124M, 1.5B, etc
     hq_dataset : str = args.hq_dataset 
 args = Hyperparameters()
@@ -586,6 +592,8 @@ if master_process:
         f.write('='*100 + '\n')
 
 training_time_ms = 0
+# accumulate per-step train losses for bootstrapping
+train_losses = []
 # start the clock
 torch.cuda.synchronize()
 t0 = time.time()
@@ -606,43 +614,53 @@ for step in range(args.num_iterations + 1):
         # stop the clock
         torch.cuda.synchronize()
         training_time_ms += 1000 * (time.time() - t0)
-        # run validation batches
+        # run validation batches, collecting per-sequence losses for bootstrapping
         model.eval()
         val_loader.reset()
-        val_loss = 0.0
+        val_seq_losses = []
         for _ in range(val_steps):
             x_val, y_val = val_loader.next_batch()
             with torch.no_grad(), ctx:
-                _, loss = model(x_val, y_val, return_logits=False)
-                val_loss += loss
-        dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)
-        val_loss /= val_steps
+                _, seq_loss = model(x_val, y_val, return_logits=False, per_seq=True)
+                val_seq_losses.append(seq_loss.detach())
+        val_seq_losses_tensor = torch.cat(val_seq_losses, dim=0)  # [val_steps * B]
+        # gather per-sequence losses from all processes, then derive scalar val loss
+        all_gathered = [torch.zeros_like(val_seq_losses_tensor) for _ in range(ddp_world_size)]
+        dist.all_gather(all_gathered, val_seq_losses_tensor)
+        all_seq_losses = torch.cat(all_gathered, dim=0)  # [val_steps * B * world_size]
+        val_loss = all_seq_losses.mean()
         perplexity = torch.exp(val_loss)
-        # log val loss to console, logfile, and summary file
         if master_process:
             print(f'val 1, step:{step}/{args.num_iterations} ppl:{perplexity:.4f} val_loss:{val_loss:.4f} train_time:{training_time_ms:.0f}ms step_avg:{training_time_ms/(timed_steps-1):.2f}ms')
             with open(logfile, "a") as f:
                 f.write(f'val 1, step:{step}/{args.num_iterations} val_loss:{val_loss:.4f} train_time:{training_time_ms:.0f}ms step_avg:{training_time_ms/(timed_steps-1):.2f}ms\n')
-        
+            np.save(os.path.join(logdir, f'val_seq_losses_step{step:06d}.npy'), all_seq_losses.cpu().numpy().astype(np.float32))
+            if last_step:
+                np.save(os.path.join(logdir, 'val_seq_losses_final.npy'), all_seq_losses.cpu().numpy().astype(np.float32))
+
         # for the second val, if it is passed in
         if args.input_val_bin_2:
             val_loader_2.reset()
-            val_loss_2 = 0.0
+            val_seq_losses_2 = []
             for _ in range(val_steps_2):
                 x_val, y_val = val_loader_2.next_batch()
                 with torch.no_grad(), ctx:
-                    _, loss = model(x_val, y_val, return_logits=False)
-                    val_loss_2 += loss
-            dist.all_reduce(val_loss_2, op=dist.ReduceOp.AVG)
-            val_loss_2 /= val_steps_2
+                    _, seq_loss = model(x_val, y_val, return_logits=False, per_seq=True)
+                    val_seq_losses_2.append(seq_loss.detach())
+            val_seq_losses_2_tensor = torch.cat(val_seq_losses_2, dim=0)
+            all_gathered_2 = [torch.zeros_like(val_seq_losses_2_tensor) for _ in range(ddp_world_size)]
+            dist.all_gather(all_gathered_2, val_seq_losses_2_tensor)
+            all_seq_losses_2 = torch.cat(all_gathered_2, dim=0)
+            val_loss_2 = all_seq_losses_2.mean()
             perplexity_2 = torch.exp(val_loss_2)
-            # log val loss to console, logfile, and summary file
             if master_process:
                 print(f'val 2, step:{step}/{args.num_iterations} ppl:{perplexity_2:.4f} val_loss:{val_loss_2:.4f} train_time:{training_time_ms:.0f}ms step_avg:{training_time_ms/(timed_steps-1):.2f}ms')
                 with open(logfile, "a") as f:
                     f.write(f'val 2, step:{step}/{args.num_iterations} val_loss:{val_loss_2:.4f} train_time:{training_time_ms:.0f}ms step_avg:{training_time_ms/(timed_steps-1):.2f}ms\n')
-            
-        
+                np.save(os.path.join(logdir, f'val_seq_losses_2_step{step:06d}.npy'), all_seq_losses_2.cpu().numpy().astype(np.float32))
+                if last_step:
+                    np.save(os.path.join(logdir, 'val_seq_losses_2_final.npy'), all_seq_losses_2.cpu().numpy().astype(np.float32))
+
         # start the clock again
         torch.cuda.synchronize()
         t0 = time.time()
@@ -651,9 +669,9 @@ for step in range(args.num_iterations + 1):
         # stop the clock
         torch.cuda.synchronize()
         training_time_ms += 1000 * (time.time() - t0)
-        # save the state of the training process
-        # log = dict(step=step, code=code, model=raw_model.state_dict(), optimizers=[opt.state_dict() for opt in optimizers])
-        #torch.save(log, 'logs/%s/state_step%06d.pt' % (run_id, step))
+        # save model checkpoint (weights only to keep size manageable)
+        log = dict(step=step, model=raw_model.state_dict())
+        torch.save(log, 'logs/%s/state_step%06d.pt' % (run_id, step))
         # start the clock again
         torch.cuda.synchronize()
         t0 = time.time()
@@ -712,9 +730,11 @@ for step in range(args.num_iterations + 1):
         print(f"step:{step+1}/{args.num_iterations} train_loss:{train_loss.item():.4f} train_time:{approx_time:.0f}ms step_avg:{approx_time/timed_steps:.2f}ms")
         with open(logfile, "a") as f:
             f.write(f"step:{step+1}/{args.num_iterations} train_loss:{train_loss.item():.4f} train_time:{approx_time:.0f}ms step_avg:{approx_time/timed_steps:.2f}ms\n")
+        train_losses.append(train_loss.item())
 
 if master_process:
     print(f"peak memory consumption: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB")
+    np.save(os.path.join(logdir, 'train_losses.npy'), np.array(train_losses, dtype=np.float32))
 print(sum(p.numel() for p in model.parameters()))
 print("end of script")
 # -------------------------------------------------------------------------

@@ -13,7 +13,7 @@ echo "Activating conda..."
 source myenv310/bin/activate
 
 nvidia-smi || echo "nvidia-smi failed"
-
+1
 CUDA_VISIBLE_DEVICES=0
 
 MIX_RATIOS=(0.55) 

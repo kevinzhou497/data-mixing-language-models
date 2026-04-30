@@ -54,6 +54,7 @@ for LR in "${LEARNING_RATES[@]}"; do
         --global_batch_size "$GLOBAL_BATCH_SIZE" \
         --device_batch_size "$DEVICE_BATCH_SIZE" \
         --grad_checkpointing \
+        --save_every 2000 \
         > "$LOGDIR/train.log" 2>&1
 
     done

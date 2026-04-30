@@ -37,10 +37,20 @@ Results append to:
 summary_logs/wikipedia/summary_<ITERS>iter_1B_<SAMPLE>.txt
 ```
 
-Per-step training logs are in:
-```
-logs/wikipedia/<ITERS>iters/mix<MIX>_lr0.001_1B_<SAMPLE>/train.log
-```
+Per-run output files (all inside `logs/wikipedia/<ITERS>iters/mix<MIX>_lr0.001_1B_<SAMPLE>/`):
+
+| File | Contents |
+|---|---|
+| `train.log` | Stdout/stderr from the torchrun process |
+| `<run_id>.txt` | Step-by-step train loss and val loss (text) |
+| `train_losses.npy` | Per-batch train loss for every training step, shape `[num_iterations]` |
+| `val_seq_losses_step{N:06d}.npy` | Per-sequence val losses at step N, shape `[val_seqs]`; saved every 100 steps |
+| `val_seq_losses_final.npy` | Per-sequence val losses at the final step — **use this for bootstrap CIs** |
+| `val_seq_losses_2_step{N:06d}.npy` | Same for second val bin (if `--val_bin_2` passed) |
+| `val_seq_losses_2_final.npy` | Same for second val bin, final step |
+| `state_step{N:06d}.pt` | Model checkpoint (weights only) at step N |
+
+The `val_seq_losses_final.npy` file is the key artifact for bootstrap confidence interval analysis — each entry is the mean cross-entropy loss for one validation sequence (~512 sequences total). Resample across runs at different mixing ratios to get error bars on the optimal mixing ratio.
 
 ---
 
@@ -50,9 +60,9 @@ Full Wikipedia, 5 horizons. Edit `job_1b.sh` or `job_1b_second.sh` with the appr
 
 | Horizon | Iterations | ~Tokens | Status | Tried So Far |
 |---|---|---|---|---|
-| 1 | 7,134 | 234M | **Done** | 0.00, 0.05, 0.10 → optimal **0.00** |
+| 1 | 7,134 | 234M | **Re-running** (need val seq losses) | 0.00, 0.05, 0.10 → optimal **0.00** (confirmed; re-running in `job_1b_second.sh`) |
 | 2 | 14,268 | 467M | In progress | Done: 0.05–0.15; Running: 0.20–0.30 |
-| 3 | 28,536 | 935M | In progress | Running: 0.25–0.35 |
+| 3 | 28,536 | 935M | Not started | Was running 0.25–0.35 but those runs predate val seq loss saving; needs re-run |
 | 4 | 57,071 | 1.87B | Not started | — |
 | 5 | 114,142 | 3.74B | Not started | — |
 
@@ -74,7 +84,7 @@ Full Wikipedia, 5 horizons. Edit `job_1b.sh` or `job_1b_second.sh` with the appr
 - Batch 4 (if still decreasing): 0.50
 
 *Horizon 3 (28,536 iters, SAMPLE=1):*
-- Batch 1: 0.25, 0.30, 0.35 ← currently in `job_1b_second.sh`
+- Batch 1: 0.25, 0.30, 0.35 ← needs re-run (previous runs predate val seq loss saving)
 - Batch 2 (if still decreasing): 0.40, 0.45, 0.50
 - Batch 3 (if still decreasing): 0.55, 0.60, 0.65
 - Batch 4 (if still decreasing): 0.70

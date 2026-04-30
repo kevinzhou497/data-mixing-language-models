@@ -37,6 +37,7 @@ parser.add_argument('--params', type=str, help='Number of parameters in the mode
 parser.add_argument('--num_iterations', type=int, default=42, help='Number of iterations')
 parser.add_argument('--subsample', type=int, default=1, help='Subsample factor')
 parser.add_argument('--hq_dataset', type=str, help='High-quality data being used (e.g. wikipedia)')
+parser.add_argument('--save_every', type=int, default=0, help='Save checkpoint every N steps; 0 = only at the end')
 args = parser.parse_args()
 # ----------------------------------------------------------------------------------
 # For better performance and precision
@@ -438,7 +439,7 @@ class Hyperparameters:
     # evaluation and logging hyperparams
     val_loss_every : int = 100 # every how many steps to evaluate val loss? 0 for only at the end
     val_tokens : int = 131072 # how many tokens of validation data? it's important to keep this fixed for consistent comparisons
-    save_every : int = 0 # every how many steps to save the checkpoint? 0 for only at the end
+    save_every : int = args.save_every
     params : str = args.params # how many parameters in the model, example: 124M, 1.5B, etc
     hq_dataset : str = args.hq_dataset 
 args = Hyperparameters()
@@ -556,6 +557,8 @@ if master_process:
         f.write('='*100 + '\n')
 
 training_time_ms = 0
+# accumulate per-step train losses for bootstrapping
+train_losses = []
 # start the clock
 torch.cuda.synchronize()
 t0 = time.time()
@@ -621,9 +624,9 @@ for step in range(args.num_iterations + 1):
         # stop the clock
         torch.cuda.synchronize()
         training_time_ms += 1000 * (time.time() - t0)
-        # save the state of the training process
-        # log = dict(step=step, code=code, model=raw_model.state_dict(), optimizers=[opt.state_dict() for opt in optimizers])
-        #torch.save(log, 'logs/%s/state_step%06d.pt' % (run_id, step))
+        # save model checkpoint (weights only to keep size manageable)
+        log = dict(step=step, model=raw_model.state_dict())
+        torch.save(log, 'logs/%s/state_step%06d.pt' % (run_id, step))
         # start the clock again
         torch.cuda.synchronize()
         t0 = time.time()
@@ -682,9 +685,11 @@ for step in range(args.num_iterations + 1):
         print(f"step:{step+1}/{args.num_iterations} train_loss:{train_loss.item():.4f} train_time:{approx_time:.0f}ms step_avg:{approx_time/timed_steps:.2f}ms")
         with open(logfile, "a") as f:
             f.write(f"step:{step+1}/{args.num_iterations} train_loss:{train_loss.item():.4f} train_time:{approx_time:.0f}ms step_avg:{approx_time/timed_steps:.2f}ms\n")
+        train_losses.append(train_loss.item())
 
 if master_process:
     print(f"peak memory consumption: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB")
+    np.save(os.path.join(logdir, 'train_losses.npy'), np.array(train_losses, dtype=np.float32))
 print(sum(p.numel() for p in model.parameters()))
 print("end of script")
 # -------------------------------------------------------------------------
