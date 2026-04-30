@@ -11,6 +11,32 @@ There are two experiment tracks:
 
 ---
 
+## Data Preparation
+
+The 1B training scripts expect FineWeb data at `data/finewebtext/train_*.bin`. If this hasn't been downloaded yet, use `job_repeat_aware_docs.sh` as a template.
+
+Edit the script to use `subsample_factor 1` (full dataset) and the correct output directory:
+
+```bash
+python repeat_aware_docs.py \
+    -d HuggingFaceFW/fineweb \
+    -c sample-10BT \
+    --subsample_factor 1 \
+    --dataset_split "train" \
+    -o data/finewebtext
+```
+
+Then submit:
+```bash
+qsub job_repeat_aware_docs.sh
+```
+
+The script downloads from Hugging Face, tokenizes with GPT-2 BPE, and writes sharded `.bin` files to the output directory. Requires ~12h walltime and 48GB RAM. Logs go to `fineweb_repeat_1_docs.log` (or similar).
+
+For Wikipedia, the same script works with `-d Salesforce/wikitext -c wikitext-103-raw-v1`. Subsampled versions (for Repeat-Aware experiments) use `--subsample_factor 2`, `4`, `8`, `16` and a separate output directory per subsample, e.g. `data/wikitext/subsample_8_docs/`.
+
+---
+
 ## Submitting Jobs
 
 ```bash
