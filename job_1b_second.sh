@@ -18,9 +18,9 @@ nvidia-smi || echo "nvidia-smi failed"
 export CUDA_VISIBLE_DEVICES=0,1
 export OMP_NUM_THREADS=4
 
-MIX_RATIOS=(0 0.05 0.10)
+MIX_RATIOS=(0.60 0.65 0.70)
 LEARNING_RATES=(0.001)
-ITERATIONS=(7134)
+ITERATIONS=(28536)
 SAMPLE=1
 HQ_DATASET="wikipedia"
 MODEL_PARAMS="1B"
@@ -54,7 +54,6 @@ for LR in "${LEARNING_RATES[@]}"; do
         --global_batch_size "$GLOBAL_BATCH_SIZE" \
         --device_batch_size "$DEVICE_BATCH_SIZE" \
         --grad_checkpointing \
-        --save_every 2000 \
         > "$LOGDIR/train.log" 2>&1
 
     done

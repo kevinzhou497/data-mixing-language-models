@@ -375,6 +375,19 @@ class DistributedDataLoader:
 
         return x.cuda(), y.cuda()
 
+    def fast_forward(self, n_calls, B_override=None):
+        B = B_override if B_override is not None else self.B
+        total_tokens = n_calls * B * self.T * self.num_processes
+        while total_tokens > 0:
+            remaining = len(self.tokens) - self.current_position
+            if total_tokens <= remaining:
+                self.current_position += total_tokens
+                break
+            total_tokens -= remaining
+            self.current_shard = (self.current_shard + 1) % len(self.files)
+            self.current_position = self.process_rank * self.B * self.T
+            self.tokens = _load_data_shard(self.files[self.current_shard])
+
 class MixedDistributedDataLoader:
     def __init__(self, primary_loader, secondary_loader, total_batch_size, mix_ratio=None, third_loader=None, mixing_ratios=None):
         self.primary_loader = primary_loader
@@ -423,9 +436,24 @@ class MixedDistributedDataLoader:
     @property
     def files(self):
         if self.third_loader:
-            return self.primary_loader.files + self.secondary_loader.files + self.third_loader.files 
-        else:     
+            return self.primary_loader.files + self.secondary_loader.files + self.third_loader.files
+        else:
             return self.primary_loader.files + self.secondary_loader.files
+
+    def fast_forward(self, n_calls):
+        B = self.total_batch_size
+        if self.mixing_ratios:
+            B1 = int(self.mixing_ratios[0] * B)
+            B2 = int(self.mixing_ratios[1] * B)
+            B3 = B - B1 - B2
+            self.primary_loader.fast_forward(n_calls, B_override=B1)
+            self.secondary_loader.fast_forward(n_calls, B_override=B2)
+            self.third_loader.fast_forward(n_calls, B_override=B3)
+        else:
+            B1 = int(self.mix_ratio * B)
+            B2 = B - B1
+            self.primary_loader.fast_forward(n_calls, B_override=B1)
+            self.secondary_loader.fast_forward(n_calls, B_override=B2)
 
 # -----------------------------------------------------------------------------
 # int main
@@ -529,7 +557,6 @@ if master_process:
 if master_process:
     print(f"Training DataLoader: total number of tokens: {train_loader.ntok_total} across {len(train_loader.files)} files")
     print(f"Validation DataLoader: total number of tokens: {val_loader.ntok_total} across {len(val_loader.files)} files")
-x, y = train_loader.next_batch()
 
 # init the model from scratch
 num_vocab = 50257
@@ -550,6 +577,25 @@ optimizer1 = torch.optim.AdamW(raw_model.lm_head.parameters(), lr=args.learning_
                                weight_decay=args.weight_decay, fused=True)
 optimizer2 = Muon(raw_model.transformer.h.parameters(), lr=0.1*args.learning_rate, momentum=0.95)
 optimizers = [optimizer1, optimizer2]
+
+# Determine run directory (needed by all processes for checkpoint detection)
+if args.mixing_ratios:
+    log_save_dir = f"wiki_pubmed/{args.num_iterations}iters/mix{args.mixing_ratios}_lr{args.learning_rate}_{args.params}_{args.subsample}"
+else:
+    log_save_dir = f"{args.hq_dataset}/{args.num_iterations}iters/mix{args.mixing_ratio}_lr{args.learning_rate}_{args.params}_{args.subsample}"
+logdir_path = 'logs/%s/' % log_save_dir
+
+# Resume from existing checkpoint if present
+resume_step = 0
+existing_ckpts = sorted(glob.glob(os.path.join(logdir_path, 'state_step*.pt')))
+if existing_ckpts:
+    latest_ckpt = existing_ckpts[-1]
+    if master_process:
+        print(f"Resuming from checkpoint: {latest_ckpt}")
+    ckpt = torch.load(latest_ckpt, map_location='cuda')
+    raw_model.load_state_dict(ckpt['model'])
+    resume_step = ckpt['step']
+
 # learning rate decay scheduler (linear warmup and warmdown)
 def get_lr(it):
     assert it <= args.num_iterations
@@ -563,33 +609,28 @@ def get_lr(it):
     else:
         decay_ratio = (args.num_iterations - it) / args.warmdown_iters
         return decay_ratio
-schedulers = [torch.optim.lr_scheduler.LambdaLR(opt, get_lr) for opt in optimizers]
+schedulers = [torch.optim.lr_scheduler.LambdaLR(opt, get_lr, last_epoch=resume_step) for opt in optimizers]
 
 # begin logging
-if args.mixing_ratios:
-    log_save_dir = f"wiki_pubmed/{args.num_iterations}iters/mix{args.mixing_ratios}_lr{args.learning_rate}_{args.params}_{args.subsample}"
-else:
-    log_save_dir = f"{args.hq_dataset}/{args.num_iterations}iters/mix{args.mixing_ratio}_lr{args.learning_rate}_{args.params}_{args.subsample}"
-    
 if master_process:
-    #run_id = str(uuid.uuid4())
     run_id = str(log_save_dir)
-    logdir = 'logs/%s/' % run_id
-    os.makedirs(logdir, exist_ok=True)    
+    logdir = logdir_path
+    os.makedirs(logdir, exist_ok=True)
     logfile = 'logs/%s.txt' % run_id
-    # create the log file
-    with open(logfile, "w") as f:
-        # begin the log by printing this file (the Python code)
-        f.write('='*100 + '\n')
-        f.write(code)
-        f.write('='*100 + '\n')
-        # log information about the hardware/software environment this is running on
-        # and print the full `nvidia-smi` to file
-        f.write(f"Running pytorch {torch.version.__version__} compiled for CUDA {torch.version.cuda}\nnvidia-smi:\n")
-        import subprocess
-        result = subprocess.run(['nvidia-smi'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        f.write(f'{result.stdout}\n')
-        f.write('='*100 + '\n')
+    if resume_step == 0:
+        # create the log file
+        with open(logfile, "w") as f:
+            f.write('='*100 + '\n')
+            f.write(code)
+            f.write('='*100 + '\n')
+            f.write(f"Running pytorch {torch.version.__version__} compiled for CUDA {torch.version.cuda}\nnvidia-smi:\n")
+            import subprocess
+            result = subprocess.run(['nvidia-smi'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            f.write(f'{result.stdout}\n')
+            f.write('='*100 + '\n')
+    else:
+        with open(logfile, "a") as f:
+            f.write(f"\n--- Resumed from step {resume_step} ---\n")
 
 training_time_ms = 0
 # accumulate per-step train losses for bootstrapping
@@ -599,15 +640,18 @@ torch.cuda.synchronize()
 t0 = time.time()
 # begin training
 train_loader.reset()
-for step in range(args.num_iterations + 1):
+if resume_step > 0:
+    # fast-forward data loader to match how many next_batch() calls would have been made
+    train_loader.fast_forward(resume_step * train_accumulation_steps)
+x, y = train_loader.next_batch()
+for step in range(resume_step, args.num_iterations + 1):
     last_step = (step == args.num_iterations)
+    local_step = step - resume_step
     # This effectively ignores timing first 10 steps, which are slower for weird reasons.
-    # Alternately, and slightly more correctly in terms of benchmarking, we could do 10
-    # steps with dummy data first, and then re-initialize the model and reset the loader.
-    if step == 10:
+    if local_step == 10:
         training_time_ms = 0
         t0 = time.time()
-    timed_steps = float('nan') if step <= 11 else (step - 10) + 1 # <= 11 to avoid bug in val
+    timed_steps = float('nan') if local_step <= 11 else (local_step - 10) + 1 # <= 11 to avoid bug in val
 
     # once in a while evaluate the validation dataset
     if (last_step or (args.val_loss_every > 0 and step % args.val_loss_every == 0)):
