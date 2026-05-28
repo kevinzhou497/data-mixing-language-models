@@ -574,7 +574,10 @@ def get_lr(it):
     else:
         decay_ratio = (args.num_iterations - it) / args.warmdown_iters
         return decay_ratio
-schedulers = [torch.optim.lr_scheduler.LambdaLR(opt, get_lr, last_epoch=resume_step) for opt in optimizers]
+schedulers = [torch.optim.lr_scheduler.LambdaLR(opt, get_lr) for opt in optimizers]
+for sched in schedulers:
+    for _ in range(resume_step):
+        sched.step()
 
 # begin logging
 if master_process:
@@ -663,7 +666,7 @@ for step in range(resume_step, args.num_iterations + 1):
         t0 = time.time()
 
     mid_step = (step == args.num_iterations // 2)
-    if master_process and (last_step or mid_step or (args.save_every > 0 and step % args.save_every == 0)):
+    if master_process and (last_step or (mid_step and step != resume_step) or (args.save_every > 0 and step % args.save_every == 0)):
         # stop the clock
         torch.cuda.synchronize()
         training_time_ms += 1000 * (time.time() - t0)

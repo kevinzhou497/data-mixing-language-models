@@ -1,5 +1,5 @@
 #!/bin/bash
-#PBS -l walltime=48:00:00
+#PBS -l walltime=72:00:00
 #PBS -l select=1:ncpus=8:mem=64gb:ngpus=2
 #PBS -o /gpfs/home/klz24/data-mixing-language-models/job_o
 #PBS -e /gpfs/home/klz24/data-mixing-language-models/job_e
@@ -18,10 +18,10 @@ nvidia-smi || echo "nvidia-smi failed"
 export CUDA_VISIBLE_DEVICES=0,1
 export OMP_NUM_THREADS=4
 
-MIX_RATIOS=(0.35 0.40)
+MIX_RATIOS=(1.0)
 LEARNING_RATES=(0.001)
-ITERATIONS=(14268)
-SAMPLE=1
+ITERATIONS=(14280)
+SAMPLE=8
 HQ_DATASET="wikipedia"
 MODEL_PARAMS="1B"
 
